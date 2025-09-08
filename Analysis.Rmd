@@ -1,0 +1,722 @@
+---
+title: "Lifespan-extending treatments increase variation in age-at-death proportionately to increases in the mean"
+output: 
+    rmdformats::html_clean:
+      code_folding: hide
+      code_download: true
+      toc_depth: 6
+editor_options: 
+  chunk_output_type: consolet
+---
+
+# Data Wrangling
+Subsetting the dataset of studies that have means and SD
+```{r}
+pacman:: p_load(tidyverse,
+               here,
+               readxl,
+               metafor,
+               orchaRd,
+               devtools, 
+               patchwork, 
+               R.rsp,
+               orchaRd,
+               emmeans,
+               flextable,
+               ggsignif,
+               forcats)
+
+# rm(list = ls())
+# devtools::install_github("daniel1noble/orchaRd", ref = "main", force = TRUE)
+
+
+ # devtools::install_github('Mikata-Project/ggthemr', force = TRUE)
+
+# if (!require("BiocManager", quietly = TRUE))
+# install.packages("BiocManager")
+#
+
+```
+
+```{r}
+knitr::opts_chunk$set(cache = TRUE)
+```
+```{r, message= FALSE}
+#this is the data used in original paper
+# Dat <- read_csv("analysis_data_ELM.csv")
+#Processed data
+Means_dat <- read_xlsx("Means_dat.xlsx")
+```
+
+```{r, eval = FALSE}
+#subsetting based on means 
+Means_dat <- Dat %>% 
+  filter(m_Measure == "mean")
+
+#Creating a column called paper ID
+Means_dat <- Means_dat %>%
+  mutate(Paper_ID = as.numeric(factor(title)))
+
+#adding a shared control column
+Means_dat <- Means_dat %>%
+  group_by(Paper_ID, m_control) %>% 
+  mutate(Shared_control = cur_group_id()) %>%
+  ungroup()
+
+#subsetting again for studies that have SD
+Means_dat <- Means_dat %>%
+  filter(!is.na(sd_control)) #there are no differences in nas between sd, se, and treatments
+
+#adding small sample size correction 
+Means_dat$small_n<-(Means_dat$n_treatment + Means_dat$n_control) / (Means_dat$n_treatment * Means_dat$n_control)
+
+#adding a grouping variable for study so I don't have to use title, and removing original effect size IDs as the numbers have been jumbled, and creating my own IDs
+Means_dat <- Means_dat %>% 
+  mutate(Study_ID = paste0("Study_", as.numeric(as.factor(title)))) %>%
+  select(-id)%>%
+  mutate(ID = paste0("ES_", row_number()))
+
+Means_dat$Study_ID <-as.factor(Means_dat$Study_ID)
+
+```
+
+## Effect size calculation {.tabset}
+
+```{r, eval = FALSE}
+# Calculate the raw CVs
+Means_dat$CV_t<-Means_dat$sd_treatment / Means_dat$m_treatment
+Means_dat$CV_c<-Means_dat$sd_control / Means_dat$m_control
+
+```
+
+### LnRR
+
+```{r, eval = FALSE}
+# Calculate the lnRR
+Means_dat$lnRR<-log(Means_dat$m_treatment) - log(Means_dat$m_control)
+
+#note that I have already filtered for studies that report SD
+val<-1/2 * (((Means_dat$sd_treatment/Means_dat$m_treatment)^2 / Means_dat$n_treatment) - ((Means_dat$sd_control/Means_dat$m_control)^2 / Means_dat$n_control))
+
+## Adjusted lnRR based on sampling variance
+Means_dat$lnRR_adust<-Means_dat$lnRR + val
+
+```
+
+### lnVR
+```{r, eval = FALSE}
+## v_lnRR using the weighted mean CV 
+#pooling within Study_ID
+pooled <- Means_dat %>%
+  group_by(Study_ID) %>%
+  summarise(
+    CV_t = mean(CV_t, na.rm = TRUE),
+    CV_c = mean(CV_c, na.rm = TRUE),
+    n_t = mean(n_treatment, na.rm = TRUE),
+    n_c = mean(n_control, na.rm = TRUE),
+    .groups = "drop"
+  )
+mu_CV_t<-weighted.mean(pooled$CV_t, pooled$n_t)
+mu_CV_c<-weighted.mean(pooled$CV_c, pooled$n_c)
+
+#now across studies
+Means_dat$v_lnRR<-mu_CV_t^2/Means_dat$n_treatment + mu_CV_c^2/Means_dat$n_control + mu_CV_t^4/(2 * Means_dat$n_treatment^2) + mu_CV_c^4/(2 * Means_dat$n_control^2)
+
+```
+
+```{r, eval = FALSE}
+# Calculate the log VR and its sampling variance based on eqn 5 and 15 in Senior et al. 2020. RSM.
+Means_dat$lnVR<-log(Means_dat$sd_treatment / Means_dat$sd_control) + 1/2 * (1 / (Means_dat$n_treatment - 1) - 1 / (Means_dat$n_control - 1))
+Means_dat$v_lnVR<-1/2 * (Means_dat$n_treatment / (Means_dat$n_treatment - 1)^2 + Means_dat$n_control / (Means_dat$n_control - 1)^2)
+```
+
+### lnCVR
+```{r, eval = FALSE}
+Means_dat$lnCVR<-Means_dat$lnVR - Means_dat$lnRR_adust
+Means_dat$v_lnCVR<-Means_dat$v_lnVR + Means_dat$v_lnRR
+```
+
+```{r, eval = FALSE}
+#Exporting data 
+writexl::write_xlsx(Means_dat, path = "Means_dat.xlsx")
+```
+
+# Summary of data {.tabset}
+241 effect sizes from 54 studies 
+
+## Species
+```{r}
+species_summary <- Means_dat %>%
+  group_by(Species) %>%
+  summarise(
+    n_studies = n_distinct(Study_ID),   
+    n_effect_sizes = n_distinct(ID)  
+  ) %>%
+  arrange(desc(n_studies))  
+
+species_summary
+```
+
+## Treatment
+```{r}
+Treatment_summary <- Means_dat %>%
+  group_by(Treatment_Overall) %>%
+  summarise(
+    n_studies = n_distinct(Study_ID),   
+    n_effect_sizes = n_distinct(ID)  
+  ) %>%
+  arrange(desc(n_studies))  
+
+Treatment_summary
+```
+
+## Sex
+```{r}
+Sex_summary <- Means_dat %>%
+  group_by(Sex) %>%
+  summarise(
+    n_studies = n_distinct(Study_ID),   
+    n_effect_sizes = n_distinct(ID)  
+  ) %>%
+  arrange(desc(n_studies))  
+
+Sex_summary
+```
+
+## Total summary
+```{r}
+summary_nested <- Means_dat %>%
+  group_by(Species, Treatment_Overall, Sex) %>%
+  summarise(
+    n_studies = n_distinct(Study_ID),
+    n_effect_sizes = n_distinct(ID),
+    .groups = "drop"
+  ) %>%
+  arrange(Species, Treatment_Overall, Sex)
+
+summary_nested
+```
+
+# Analysis {.tabset}
+```{r, eval = FALSE}
+plot(log(Means_dat$m_treatment), log(Means_dat$sd_treatment))
+plot(log(Means_dat$m_control), log(Means_dat$sd_control))
+plot(Means_dat$lnRR, Means_dat$lnVR)
+plot(Means_dat$lnRR, Means_dat$lnCVR)
+```
+
+## lnVR {.tabset}
+
+### I2 across all diets
+```{r}
+Means_dat$Species <- as.factor(Means_dat$Species)
+Means_dat$Study_ID <- as.factor(Means_dat$Study_ID)
+Means_dat$ID <- as.factor(Means_dat$ID)
+
+m <- rma.mv(yi=lnVR, V=v_lnVR, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m
+i2_ml(m)
+# i2_ml(m, boot = 1000) # could bootstrap I2
+
+
+m1 <- rma.mv(yi=lnRR, V=v_lnRR, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1
+```
+
+### Without intercept 
++ DR is more variable than the control (m1, m1a)
++ met and rapa do not differ from the DR (m2, m2a)
++ treatment explains little of the total variation
+
+```{r}
+Means_dat$Treatment_Overall <- fct_rev(Means_dat$Treatment_Overall)
+m1 <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Treatment_Overall-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1
+r2_ml(m1)
+```
+
+#### Orchard plot
+
+```{r}
+res <- mod_results(m1, mod = "Treatment_Overall", data = Means_dat, group = "Study_ID")
+
+Fig1A <- orchard_plot(res, 
+                     mod = "Treatment_Overall", 
+                     group = "Study_ID", 
+                     xlab = "lnVR", 
+                     alpha = 0.4) +
+        theme(axis.text.y = element_text(angle = 45))+ theme(legend.position = "none") + ylim(-3, 3) + geom_point(size = 1.5, shape = 124) 
+
+Fig1A
+```
+
+#### Corrected for PB
+Results remain consistent
+```{r}
+m1a <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Treatment_Overall-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1a
+r2_ml(m1a)
+```
+
+### With intercept
++ Met and Rapa don't sig differ from DR 
++ treatment explains little of the total variation
+```{r}
+Means_dat$Treatment_Overall <- fct_rev(Means_dat$Treatment_Overall)
+m1b <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Treatment_Overall, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1b
+r2_ml(m1)
+```
+
+#### Corrected for PB
+Results remain consistent
+treatment and PB explain little of variation
+```{r}
+m1c <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Treatment_Overall + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1c
+r2_ml(m1c)
+```
+
+### Sex {.tabset}
+
+Only looked at males and females (excluded mixed sex studies)
+```{r}
+Sex_subset <- subset(Means_dat, Sex != "mixed")
+Sex_subset$Sex <- as.factor(Sex_subset$Sex)
+```
+
+#### Overall effect across all treatments
+ + Both males and females having increased variance with lifespan treatment (m2, m2a)
+ + Sex explains minimal variation 
+ + The sexes don't differ from each other (m2b, m2c)
+ 
+##### Without intercept
+```{r}
+m2 <-rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Sex_subset, method="REML", test="t")
+m2
+r2_ml(m2)
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m2a <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Sex_subset, method="REML", test="t")
+m2a
+r2_ml(m2a)
+```
+
+##### With intercept
+```{r}
+
+m2b <-  rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Sex_subset, method="REML", test="t")
+m2b
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m2c <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Sex_subset, method="REML", test="t")
+m2c
+```
+
+```{r, message = FALSE}
+res <- mod_results(m2, mod = "Sex", data = Sex_subset, group = "Study_ID")
+
+Fig2 <- orchard_plot(res, mod = "Sex", group = "Study_ID", xlab = "lnVR", alpha=0.4) +
+theme(axis.text.y = element_text(angle = 45))+ scale_colour_manual(values = c("grey34","grey34")) + scale_fill_manual(values = c("grey34","grey34"))
+
+Fig2
+```
+
+#### DR
+
+```{r}
+DR <- subset(Sex_subset, Treatment_Overall == "Dietary restriction")
+```
+
+##### Without intercept
+```{r}
+
+m3 <-rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=DR, method="REML", test="t")
+m3
+r2_ml(m3)
+```
+
+###### Correcting for PB
+Results remain consistent
+```{r}
+m3a <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=DR, method="REML", test="t")
+m3a
+r2_ml(m3a)
+```
+
+##### With intercept
+The sexes don't differ from each other in their response
+```{r}
+
+m3b <-  rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=DR, method="REML", test="t")
+m3b
+```
+
+###### Correcting for PB
+Results remain consistent
+```{r}
+m3c <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=DR, method="REML", test="t")
+m3c
+```
+
+```{r, message = FALSE}
+res <- mod_results(m3, mod = "Sex", data = DR, group = "Study_ID")
+
+Fig1_DR <- orchard_plot(res, mod = "Sex", group = "Study_ID", xlab = "lnVR", alpha=0.4) +
+theme(axis.text.y = element_text(angle = 45)) + scale_colour_manual(values = c("#DDCC77","#DDCC77"))  + scale_fill_manual(values = c("#DDCC77","#DDCC77")) + ggtitle("Dietary restriction")+ theme(legend.position = "none") + ylim(-3, 3)
+
+Fig1_DR
+```
+
+#### Rapamycin
+
+```{r}
+Rapa <- subset(Sex_subset, Treatment_Overall == "Rapamycin")
+```
+
+##### Without intercept
+```{r, warning = FALSE}
+#without intercept: Rapa is not significant in either sex
+m4 <-rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Rapa, method="REML", test="t")
+m4
+r2_ml(m4)
+```
+
+###### Correcting for PB
+Results remain consistent
+```{r}
+m4a <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Rapa, method="REML", test="t")
+m4a
+r2_ml(m4a)
+```
+
+##### With intercept
+```{r}
+#With intercept. The sexes don't differ from each other in their response
+m4b <-  rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Rapa, method="REML", test="t")
+m4b
+```
+
+###### Correcting for PB
+Results remain consistent
+```{r}
+m4c <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Rapa, method="REML", test="t")
+m4c
+```
+
+```{r, message = FALSE}
+res <- mod_results(m4, mod = "Sex", data = Rapa, group = "Study_ID")
+
+Fig1_rap <- orchard_plot(res, mod = "Sex", group = "Study_ID", xlab = "lnVR", alpha=0.4) +
+theme(axis.text.y = element_text(angle = 45))+ scale_colour_manual(values = c("#88CCEE","#88CCEE"))  + scale_fill_manual(values = c("#88CCEE","#88CCEE")) + ggtitle("Rapamycin")+ theme(legend.position = "none")+ ylim(-3, 3)
+Fig1_rap 
+```
+
+#### Metformin
+
+```{r}
+Met <- subset(Sex_subset, Treatment_Overall == "Metformin")
+```
+
+##### Without intercept
+```{r}
+#Needed to use an optimiser (same as original paper)
+m5 <-rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Met, method="REML", test="t", control = list(optimizer = "optim", optmethod = "Nelder-Mead"))
+m5
+r2_ml(m5)
+```
+
+###### Correcting for PB
+Results remain consistent
+```{r}
+m5a <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Met, method="REML", test="t", control = list(optimizer = "optim", optmethod = "Nelder-Mead"))
+m5a
+r2_ml(m5a)
+```
+
+##### With intercept
+```{r}
+m5b <-  rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Met, method="REML", test="t", control = list(optimizer = "optim", optmethod = "Nelder-Mead"))+ theme(legend.position = "none")
+m5b
+```
+
+###### Correcting for PB
+Results remain consistent
+```{r}
+m5c <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Met, method="REML", test="t", control = list(optimizer = "optim", optmethod = "Nelder-Mead"))
+m5c
+```
+
+```{r, message = FALSE}
+res <- mod_results(m5, mod = "Sex", data = Met, group = "Study_ID")
+
+Fig1_met <- orchard_plot(res, mod = "Sex", group = "Study_ID", xlab = "lnVR", alpha=0.4) +
+theme(axis.text.y = element_text(angle = 45))+ scale_colour_manual(values = c("#CC6677","#CC6677"))  + scale_fill_manual(values = c("#CC6677","#CC6677")) + ggtitle("Metformin") + theme(legend.position = "none") + ylim(-3, 3)
+
+Fig1_met
+```
+
+```{r, message = FALSE}
+Fig1A_sex <- (Fig1_DR / Fig1_met/ Fig1_rap)
+```
+
+## lnCVR {.tabset}
+Changes in variance after accounting for changes in the mean
++ No increase in variation across treatments
+
+### I2 across all diets
+```{r}
+m <- rma.mv(yi=lnCVR, V=v_lnCVR, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m
+i2_ml(m)
+# i2_ml(m, boot = 1000)
+
+```
+
+### Without intercept 
++ Treatments don't increase variation after accounting for increases in the mean
+```{r}
+Means_dat$Treatment_Overall <- as.factor(Means_dat$Treatment_Overall)
+# Means_dat$Treatment_Overall <- fct_rev(Means_dat$Treatment_Overall)
+m1 <- rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Treatment_Overall-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1
+r2_ml(m1)
+```
+
+#### Orchard plot
+
+```{r}
+Means_dat$Treatment_Overall <- fct_rev(Means_dat$Treatment_Overall)
+m1 <- rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Treatment_Overall-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+
+res <- mod_results(m1, mod = "Treatment_Overall", data = Means_dat, group = "Study_ID")
+# res$mod_levels <- rev(res$mod_levels)
+
+Fig1B <- orchard_plot(res, 
+                     mod = "Treatment_Overall", 
+                     group = "Study_ID", 
+                     xlab = "lnCVR", 
+                     alpha = 0.4) +
+        theme(axis.text.y = element_text(angle = 45))+ theme(legend.position = "none")+ ylim(-3, 3)
+
+Fig1B
+```
+
+#### Corrected for PB
+Results remain consistent
+```{r}
+m1a <- rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Treatment_Overall-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1a
+r2_ml(m1a)
+```
+
+### With intercept
+Met and Rapa don't sig differ from DR 
+treatment explains little of the total variation
+```{r}
+Means_dat$Treatment_Overall <- fct_rev(Means_dat$Treatment_Overall)
+m1b <- rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Treatment_Overall, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1b
+r2_ml(m1)
+```
+
+#### Corrected for PB
+Results remain consistent
+```{r}
+m1c <- rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Treatment_Overall + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Means_dat, method="REML", test="t")
+m1c
+r2_ml(m1c)
+```
+
+### Sex {.tabset}
+
+Only looked at males and females (excludws mixed sex studies)
+```{r}
+Sex_subset <- subset(Means_dat, Sex != "mixed")
+Sex_subset$Sex <- as.factor(Sex_subset$Sex)
+```
+
+#### Overall effect across all treatments
+
+##### Without intercept
+```{r}
+m2 <-rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Sex_subset, method="REML", test="t")
+m2
+r2_ml(m2)
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m2a <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Sex_subset, method="REML", test="t")
+m2a
+r2_ml(m2a)
+```
+
+##### With intercept
+```{r}
+m2b <-  rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Sex_subset, method="REML", test="t")
+m2b
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m2c <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Sex_subset, method="REML", test="t")
+m2c
+```
+
+```{r, message = FALSE}
+res <- mod_results(m2, mod = "Sex", data = Sex_subset, group = "Study_ID")
+
+Fig1B_sex <- orchard_plot(res, mod = "Sex", group = "Study_ID", xlab = "lnCVR", alpha=0.4) +
+theme(axis.text.y = element_text(angle = 45))+ scale_colour_manual(values = c("grey34","grey34")) + scale_fill_manual(values = c("grey34","grey34"))
+
+Fig1B_sex 
+```
+
+#### DR
+##### Without intercept
+```{r}
+m3 <-rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=DR, method="REML", test="t")
+m3
+r2_ml(m3)
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m3a <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=DR, method="REML", test="t")
+m3a
+r2_ml(m3a)
+```
+
+##### With intercept
+```{r}
+#With intercept. The sexes don't differ from each other in their response
+m3b <-  rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=DR, method="REML", test="t")
+m3b
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m3c <- rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=DR, method="REML", test="t")
+m3c
+```
+
+```{r, message = FALSE}
+res <- mod_results(m3, mod = "Sex", data = DR, group = "Study_ID")
+
+Fig1B_DR <- orchard_plot(res, mod = "Sex", group = "Study_ID", xlab = "lnCVR", alpha=0.4) +
+theme(axis.text.y = element_text(angle = 45)) + scale_colour_manual(values = c("#DDCC77","#DDCC77"))  + scale_fill_manual(values = c("#DDCC77","#DDCC77")) + ggtitle("Dietary restriction")+ theme(legend.position = "none")+ ylim(-3, 3)
+
+Fig1B_DR
+```
+
+#### Rapamycin
+
+##### Without intercept
+```{r, warning = FALSE}
+#without intercept: Rapa is not significant in either sex
+m4 <-rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Rapa, method="REML", test="t")
+m4
+r2_ml(m4)
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m4a <- rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Rapa, method="REML", test="t")
+m4a
+r2_ml(m4a)
+```
+
+##### With intercept
+```{r}
+#With intercept. The sexes don't differ from each other in their response
+m4b <-  rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Rapa, method="REML", test="t")
+m4b
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m4c <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Rapa, method="REML", test="t")
+m4c
+```
+
+```{r, message = FALSE}
+res <- mod_results(m4, mod = "Sex", data = Rapa, group = "Study_ID")
+
+Fig1B_rapa <- orchard_plot(res, mod = "Sex", group = "Study_ID", xlab = "lnCVR", alpha=0.4) +
+theme(axis.text.y = element_text(angle = 45))+ scale_colour_manual(values = c("#88CCEE","#88CCEE"))  + scale_fill_manual(values = c("#88CCEE","#88CCEE")) + ggtitle("Rapamycin")+ theme(legend.position = "none")+ ylim(-3, 3)
+
+Fig1B_rapa
+```
+
+#### Metformin
+
+##### Without intercept
+```{r}
+#Needed to use an optimiser (same as original paper)
+m5 <-rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex-1, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Met, method="REML", test="t", control = list(optimizer = "optim", optmethod = "Nelder-Mead"))
+m5
+r2_ml(m5)
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m5a <- rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex-1 + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Met, method="REML", test="t", control = list(optimizer = "optim", optmethod = "Nelder-Mead"))
+m5a
+r2_ml(m5a)
+```
+
+##### With intercept
+```{r}
+#With intercept. The sexes don't differ from each other in their response
+m5b <-  rma.mv(yi=lnCVR, V=v_lnCVR, mods=~Sex, random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Met, method="REML", test="t", control = list(optimizer = "optim", optmethod = "Nelder-Mead"))
+m5b
+```
+
+###### Correcting for PB 
+Results remain consistent
+```{r}
+m5c <- rma.mv(yi=lnVR, V=v_lnVR, mods=~Sex + small_n + scale(Year, scale=F) , random=list(~1|Species, ~1|Study_ID, ~1|ID), data=Met, method="REML", test="t", control = list(optimizer = "optim", optmethod = "Nelder-Mead"))
+m5c
+```
+
+```{r, message = FALSE}
+res <- mod_results(m5, mod = "Sex", data = Met, group = "Study_ID")
+
+Fig1B_met <- orchard_plot(res, mod = "Sex", group = "Study_ID", xlab = "lnCVR", alpha=0.4) +
+theme(axis.text.y = element_text(angle = 45))+ scale_colour_manual(values = c("#CC6677","#CC6677"))  + scale_fill_manual(values = c("#CC6677","#CC6677")) + ggtitle("Metformin")+ theme(legend.position = "none")+ ylim(-3, 3)
+
+Fig1B_met 
+```
+
+```{r, message = FALSE}
+Fig1B_sex <- (Fig1B_DR / Fig1B_met/ Fig1B_rapa)
+```
+
+# Figures
+
+## Fig.1 
+
+```{r}
+Fig1A <- (Fig1A | Fig1A_sex)
+
+Fig1B <- (Fig1B | Fig1B_sex)
+
+Fig1 <-(Fig1A / Fig1B)
+Fig1
+# exported as 20 x 15 inch PDF - landscape
+```
+
