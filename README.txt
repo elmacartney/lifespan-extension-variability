@@ -1,10 +1,10 @@
 ######README######
 
-analysis_data_ELM - original data file taken from Ivimey-Cook et al (2025)
+analysis_data_ELM - original data file taken from Ivimey-Cook and Sultanova et al (2025)
 Means_dat - Processed data with lnVR and lnCVR
 Analysis - code for all data processing and statistical analyses 
 
-Analysis_data_ELM column names (from Ivimey-Cook et al (2025): 
+Analysis_data_ELM column names (from Ivimey-Cook and Sultanova et al (2025)): 
 id = 1:911 unique individual ID
 Author list: list of authors
 title: title of paper
